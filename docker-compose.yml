@@ -77,22 +77,24 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      - "443:443/udp"
-    environment:
-      APP_DOMAIN: ${APP_DOMAIN}
-      ACME_EMAIL: ${ACME_EMAIL}
     volumes:
       - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
+    networks:
+      - web-net
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: nexusedge-tunnel
+    restart: always
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - caddy
     networks:
       - web-net
 
 volumes:
   pgdata:
   redisdata:
-  caddy_data:
-  caddy_config:
 
 networks:
   internal-net:

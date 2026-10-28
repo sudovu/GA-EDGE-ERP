@@ -7,7 +7,7 @@ async function start() {
 
   try {
     const address = await app.listen({ port, host: '0.0.0.0' });
-    console.log(`NexusEdge Server listening on ${address}`);
+    console.log(`GA-ERP Server listening on ${address}`);
   } catch (err) {
     app.log.error(err);
     process.exit(1);

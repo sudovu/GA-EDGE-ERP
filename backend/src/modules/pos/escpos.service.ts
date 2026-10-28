@@ -139,7 +139,7 @@ export class EscPosService {
 
     // 7. Footer & Barcode Representation
     append(this.CMD_ALIGN_CENTER);
-    appendLine('Thank you for choosing NexusEdge!');
+    appendLine('Thank you for choosing GA-ERP!');
     appendLine('Goods once sold can be exchanged within 7 days');
     appendLine('with original invoice.');
     appendLine(`*${data.invoiceNo}*`);

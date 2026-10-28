@@ -1,10 +1,9 @@
 {
-    email info@gautambhuwan.com.np
     admin off
+    auto_https off
 }
 
-# Allow direct local IP / domain access over internal TLS or HTTP
-http://erp.gautambhuwan.com.np, http://103.114.24.34, http://localhost {
+:80 {
     encode zstd gzip
 
     header {
@@ -14,15 +13,30 @@ http://erp.gautambhuwan.com.np, http://103.114.24.34, http://localhost {
         -server
     }
 
+    # Backend API Routing
     handle /api/* {
-        reverse_proxy backend:4000
+        reverse_proxy backend:4000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto https
+        }
     }
 
+    # Health Check
     handle /health {
-        reverse_proxy backend:4000
+        reverse_proxy backend:4000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+        }
     }
 
+    # Frontend Single Page Application
     handle {
-        reverse_proxy frontend:80
+        reverse_proxy frontend:80 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto https
+        }
     }
 }

@@ -93,7 +93,7 @@ export class ReceiptService {
   <div class="disclaimer">
     <strong>Terms & Disclaimers:</strong>
     1. Goods left unclaimed over 45 days after completion notice may incur storage fees or be recycled.
-    2. NexusEdge is not liable for data loss. Customers must back up critical data prior to repair.
+    2. GA-ERP is not liable for data loss. Customers must back up critical data prior to repair.
     3. Original job card must be surrendered upon hardware pickup.
   </div>
 

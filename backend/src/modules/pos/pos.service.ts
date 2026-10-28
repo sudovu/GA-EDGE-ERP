@@ -393,7 +393,7 @@ export class POSService {
     if (!invoice) throw new Error('Invoice not found.');
 
     const receiptData: ReceiptPrintData = {
-      shopName: process.env.SHOP_NAME || 'NexusEdge Solutions',
+      shopName: process.env.SHOP_NAME || 'GA-ERP Solutions',
       shopPhone: process.env.SHOP_PHONE || '+977-1-4455660',
       shopEmail: process.env.SHOP_EMAIL || 'support@nexusedge.internal',
       invoiceNo: invoice.invoiceNo,
