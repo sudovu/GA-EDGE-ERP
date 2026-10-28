@@ -1,0 +1,28 @@
+{
+    email info@gautambhuwan.com.np
+    admin off
+}
+
+# Allow direct local IP / domain access over internal TLS or HTTP
+http://erp.gautambhuwan.com.np, http://103.114.24.34, http://localhost {
+    encode zstd gzip
+
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -server
+    }
+
+    handle /api/* {
+        reverse_proxy backend:4000
+    }
+
+    handle /health {
+        reverse_proxy backend:4000
+    }
+
+    handle {
+        reverse_proxy frontend:80
+    }
+}

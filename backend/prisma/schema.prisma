@@ -1,0 +1,371 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  ACCOUNTANT
+  CASHIER
+  INVENTORY_MANAGER
+  TECHNICIAN
+}
+
+enum RepairStatus {
+  RECEIVED
+  UNDER_DIAGNOSIS
+  WAITING_FOR_CUSTOMER_APPROVAL
+  WAITING_FOR_PARTS
+  IN_REPAIR
+  TESTING_QC
+  READY_FOR_COLLECTION
+  DELIVERED
+  ON_HOLD
+  CANCELLED
+  UNREPAIRABLE
+  WARRANTY_RETURN
+}
+
+enum MovementType {
+  PURCHASE_RECEIPT
+  SALE_DEDUCTION
+  REPAIR_CONSUMPTION
+  STOCK_ADJUSTMENT
+  RETURN_TO_SUPPLIER
+  CUSTOMER_RETURN
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  DIGITAL_WALLET
+  STORE_CREDIT
+}
+
+model User {
+  id           String      @id @default(uuid())
+  username     String      @unique
+  email        String      @unique
+  passwordHash String
+  fullName     String
+  role         Role        @default(CASHIER)
+  isActive     Boolean     @default(true)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  
+  assignedJobs   RepairJob[]           @relation("TechnicianAssigned")
+  auditLogs      AuditLog[]
+  stockMovements StockMovement[]
+  journalEntries JournalEntry[]
+  statusHistory  RepairStatusHistory[]
+  invoicesIssued Invoice[]             @relation("CashierInvoices")
+}
+
+model Customer {
+  id           String       @id @default(uuid())
+  fullName     String
+  phone        String       @unique
+  email        String?
+  address      String?
+  creditLimit  Decimal      @default(0.0) @db.Decimal(12, 2)
+  balanceDue   Decimal      @default(0.0) @db.Decimal(12, 2)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  repairJobs   RepairJob[]
+  invoices     Invoice[]
+
+  @@index([phone])
+}
+
+model Supplier {
+  id             String          @id @default(uuid())
+  companyName    String
+  contactPerson  String?
+  email          String?
+  phone          String          @unique
+  address        String?
+  taxNumber      String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  purchaseOrders PurchaseOrder[]
+}
+
+model Product {
+  id             String            @id @default(uuid())
+  sku            String            @unique
+  barcode        String?           @unique
+  name           String
+  description    String?
+  category       String
+  brand          String?
+  model          String?
+  costPrice      Decimal           @db.Decimal(12, 2)
+  retailPrice    Decimal           @db.Decimal(12, 2)
+  stockQuantity  Int               @default(0)
+  minStockAlert  Int               @default(5)
+  isSparePart    Boolean           @default(false)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  serials        ProductSerial[]
+  repairParts    RepairPartUsage[]
+  movements      StockMovement[]
+  poItems        PurchaseOrderItem[]
+  invoiceItems   InvoiceItem[]
+
+  @@index([sku])
+  @@index([barcode])
+  @@index([category])
+}
+
+model ProductSerial {
+  id              String         @id @default(uuid())
+  productId       String
+  serialNo        String
+  imei            String?
+  macAddress      String?
+  isSold          Boolean        @default(false)
+  stockMovementId String?
+  createdAt       DateTime       @default(now())
+  
+  product         Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
+  stockMovement   StockMovement? @relation(fields: [stockMovementId], references: [id])
+
+  @@unique([productId, serialNo])
+  @@index([serialNo])
+  @@index([macAddress])
+}
+
+model StockMovement {
+  id             String          @id @default(uuid())
+  productId      String
+  userId         String
+  movementType   MovementType
+  quantityDelta  Int
+  unitCost       Decimal         @db.Decimal(12, 2)
+  referenceId    String?
+  notes          String?
+  createdAt      DateTime        @default(now())
+
+  product        Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  user           User            @relation(fields: [userId], references: [id], onDelete: Restrict)
+  serials        ProductSerial[]
+
+  @@index([productId])
+  @@index([referenceId])
+}
+
+model PurchaseOrder {
+  id               String              @id @default(uuid())
+  orderNumber      String              @unique
+  supplierId       String
+  status           String              @default("DRAFT")
+  totalCost        Decimal             @default(0.0) @db.Decimal(12, 2)
+  notes            String?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  supplier         Supplier            @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  items            PurchaseOrderItem[]
+}
+
+model PurchaseOrderItem {
+  id               String        @id @default(uuid())
+  purchaseOrderId  String
+  productId        String
+  orderedQuantity  Int
+  receivedQuantity Int           @default(0)
+  unitCost         Decimal       @db.Decimal(12, 2)
+  totalCost        Decimal       @db.Decimal(12, 2)
+
+  purchaseOrder    PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product          Product       @relation(fields: [productId], references: [id], onDelete: Restrict)
+}
+
+model RepairJob {
+  id                String            @id @default(uuid())
+  jobNumber         String            @unique
+  customerId        String
+  technicianId      String?
+  deviceType        String
+  brand             String
+  model             String
+  serialNumber      String?
+  reportedFault     String
+  physicalCondition String?
+  accessories       String?
+  securityPin       String?
+  diagnosticReport  String?
+  status            RepairStatus      @default(RECEIVED)
+  estimatedCost     Decimal?          @db.Decimal(12, 2)
+  finalLaborCost    Decimal           @default(0.0) @db.Decimal(12, 2)
+  finalPartsCost    Decimal           @default(0.0) @db.Decimal(12, 2)
+  totalCost         Decimal           @default(0.0) @db.Decimal(12, 2)
+  customerApproved  Boolean           @default(false)
+  approvedAt        DateTime?
+  internalNotes     String?
+  qcPassed          Boolean           @default(false)
+  qcNotes           String?
+  deliveredTo       String?
+  warrantyDays      Int               @default(30)
+  receivedDate      DateTime          @default(now())
+  completedDate     DateTime?
+  deliveredDate     DateTime?
+  
+  customer          Customer          @relation(fields: [customerId], references: [id])
+  technician        User?             @relation("TechnicianAssigned", fields: [technicianId], references: [id])
+  partsUsed         RepairPartUsage[]
+  history           RepairStatusHistory[]
+
+  @@index([jobNumber])
+  @@index([status])
+}
+
+model RepairStatusHistory {
+  id          String       @id @default(uuid())
+  repairJobId String
+  userId      String
+  fromStatus  RepairStatus
+  toStatus    RepairStatus
+  note        String?
+  createdAt   DateTime     @default(now())
+
+  repairJob   RepairJob    @relation(fields: [repairJobId], references: [id], onDelete: Cascade)
+  user        User         @relation(fields: [userId], references: [id])
+
+  @@index([repairJobId])
+}
+
+model RepairPartUsage {
+  id          String    @id @default(uuid())
+  repairJobId String
+  productId   String
+  quantity    Int       @default(1)
+  unitPrice   Decimal   @db.Decimal(12, 2)
+  totalPrice  Decimal   @db.Decimal(12, 2)
+  createdAt   DateTime  @default(now())
+
+  repairJob   RepairJob @relation(fields: [repairJobId], references: [id], onDelete: Cascade)
+  product     Product   @relation(fields: [productId], references: [id])
+
+  @@index([repairJobId])
+}
+
+model Invoice {
+  id           String        @id @default(uuid())
+  invoiceNo    String        @unique
+  customerId   String
+  userId       String?
+  subTotal     Decimal       @db.Decimal(12, 2)
+  taxAmount    Decimal       @db.Decimal(12, 2)
+  discount     Decimal       @default(0.0) @db.Decimal(12, 2)
+  grandTotal   Decimal       @db.Decimal(12, 2)
+  paidAmount   Decimal       @default(0.0) @db.Decimal(12, 2)
+  changeAmount Decimal       @default(0.0) @db.Decimal(12, 2)
+  isPaid       Boolean       @default(false)
+  notes        String?
+  createdAt    DateTime      @default(now())
+
+  customer     Customer      @relation(fields: [customerId], references: [id])
+  cashier      User?         @relation("CashierInvoices", fields: [userId], references: [id])
+  items        InvoiceItem[]
+  payments     Payment[]
+
+  @@index([invoiceNo])
+  @@index([createdAt])
+}
+
+model InvoiceItem {
+  id          String   @id @default(uuid())
+  invoiceId   String
+  productId   String
+  quantity    Int
+  unitPrice   Decimal  @db.Decimal(12, 2)
+  costPrice   Decimal  @default(0.0) @db.Decimal(12, 2)
+  totalPrice  Decimal  @db.Decimal(12, 2)
+
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  product     Product  @relation(fields: [productId], references: [id])
+
+  @@index([invoiceId])
+  @@index([productId])
+}
+
+model Payment {
+  id          String        @id @default(uuid())
+  invoiceId   String
+  amount      Decimal       @db.Decimal(12, 2)
+  method      PaymentMethod
+  referenceNo String?
+  createdAt   DateTime      @default(now())
+
+  invoice     Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@index([method])
+}
+
+model Account {
+  id          String         @id @default(uuid())
+  accountCode String         @unique
+  name        String
+  type        AccountType
+  balance     Decimal        @default(0.0) @db.Decimal(14, 2)
+  createdAt   DateTime       @default(now())
+
+  debitLines  JournalLine[]  @relation("DebitAccount")
+  creditLines JournalLine[]  @relation("CreditAccount")
+}
+
+model JournalEntry {
+  id          String        @id @default(uuid())
+  entryNumber String        @unique
+  reference   String?
+  memo        String
+  userId      String
+  date        DateTime      @default(now())
+  createdAt   DateTime      @default(now())
+
+  user        User          @relation(fields: [userId], references: [id])
+  lines       JournalLine[]
+}
+
+model JournalLine {
+  id             String       @id @default(uuid())
+  journalEntryId String
+  debitAccountId String?
+  creditAccountId String?
+  amount         Decimal      @db.Decimal(12, 2)
+
+  journalEntry   JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  debitAccount   Account?     @relation("DebitAccount", fields: [debitAccountId], references: [id])
+  creditAccount  Account?     @relation("CreditAccount", fields: [creditAccountId], references: [id])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  action     String
+  entity     String
+  entityId   String
+  metadata   Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  user       User?    @relation(fields: [userId], references: [id])
+}

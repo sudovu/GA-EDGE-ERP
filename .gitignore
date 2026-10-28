@@ -1,0 +1,37 @@
+# Secrets & Environment Configurations
+.env
+*.env
+*.pem
+*.key
+*.cert
+
+# Node.js dependencies
+node_modules/
+.npm/
+npm-debug.log*
+
+# Compilations & Builds
+dist/
+build/
+.cache/
+*.tsbuildinfo
+
+# Persistence Volumes & Backups
+backups/
+pgdata/
+redisdata/
+caddy_data/
+caddy_config/
+uploads/
+
+# Operating System & IDE files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Temporary scripts
+/tmp/test_*.sh
+/tmp/verify_*.sh
