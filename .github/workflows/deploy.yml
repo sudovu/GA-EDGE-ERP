@@ -88,9 +88,7 @@ jobs:
             echo "[+] 3. Rolling update of application services..."
             docker compose up -d --remove-orphans backend frontend caddy cloudflared
 
-            echo "[+] 4. Verifying container readiness with polling loop..."
-            
-            # Wait for database healthy state (up to 30s)
+            echo "[+] 4. Verifying database container health..."
             DB_READY=false
             for i in {1..15}; do
               STATUS=$(docker inspect -f '{{.State.Health.Status}}' nexusedge-db 2>/dev/null || echo "starting")
@@ -109,44 +107,54 @@ jobs:
               exit 1
             fi
 
-            # Resilient API health check loop (up to 45s)
-            echo "[+] 5. Probing Fastify backend health endpoint..."
+            echo "[+] 5. Probing Fastify backend health endpoint (IPv4 loopback)..."
             API_HEALTHY=false
             for attempt in {1..15}; do
-              # Query internal health directly inside the container via Node
-              HEALTH_RESP=$(docker compose exec -T backend node -e '
+              # 1. Try explicit IPv4 loopback probe inside backend container
+              PROBE_RESULT=$(docker compose exec -T backend node -e '
                 const http = require("http");
-                const req = http.get("http://localhost:4000/health", (res) => {
+                const req = http.get("http://127.0.0.1:4000/health", (res) => {
                   let body = "";
                   res.on("data", c => body += c);
                   res.on("end", () => {
                     if (res.statusCode === 200 && body.includes("healthy")) {
-                      process.stdout.write("OK:" + body);
+                      process.stdout.write("HEALTHY:" + body);
                       process.exit(0);
                     }
+                    process.stderr.write(`HTTP_${res.statusCode}_BODY_${body}`);
                     process.exit(1);
                   });
                 });
-                req.on("error", () => process.exit(1));
-                req.setTimeout(2000, () => { req.destroy(); process.exit(1); });
-              ' 2>/dev/null || echo "RETRY")
+                req.on("error", (e) => { process.stderr.write("ERR_" + e.code); process.exit(1); });
+                req.setTimeout(3000, () => { req.destroy(); process.stderr.write("TIMEOUT"); process.exit(1); });
+              ' 2>&1 || true)
 
-              if [[ "$HEALTH_RESP" == OK:* ]]; then
-                echo "[✓] Backend health verified: ${HEALTH_RESP#OK:}"
+              if [[ "$PROBE_RESULT" == HEALTHY:* ]]; then
+                echo "[✓] Backend health verified via 127.0.0.1:4000: ${PROBE_RESULT#HEALTHY:}"
                 API_HEALTHY=true
                 break
               fi
 
-              echo "Backend still initializing... attempt $attempt/15"
+              # 2. Fallback probe: test via host Caddy proxy (:80/health)
+              CADDY_HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 3 http://127.0.0.1/health 2>/dev/null || echo "000")
+              if [ "$CADDY_HTTP_CODE" == "200" ]; then
+                echo "[✓] Backend health verified through Caddy Gateway (:80/health)"
+                API_HEALTHY=true
+                break
+              fi
+
+              echo "Backend probe attempt $attempt/15: status='$PROBE_RESULT', caddy_code='$CADDY_HTTP_CODE'. Retrying in 3s..."
               sleep 3
             done
 
             if [ "$API_HEALTHY" != "true" ]; then
-              echo "[!] Backend health probe failed after 45 seconds!"
-              echo "--- Container status ---"
+              echo "[!] Backend health probe failed after 45 seconds."
+              echo "=== Docker Compose Process Table ==="
               docker compose ps
-              echo "--- Backend runtime logs ---"
-              docker logs --tail 30 nexusedge-api
+              echo "=== Fastify Container Logs (nexusedge-api) ==="
+              docker logs --tail 40 nexusedge-api
+              echo "=== Caddy Gateway Logs (nexusedge-caddy) ==="
+              docker logs --tail 20 nexusedge-caddy
               exit 1
             fi
 
