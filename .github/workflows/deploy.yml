@@ -1,0 +1,139 @@
+name: GA-ERP Production CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+jobs:
+  validate-and-build:
+    name: Code Quality & Container Build Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Validate Backend Dependencies & Compilation
+        run: |
+          cd backend
+          npm ci --prefer-offline --no-audit
+          npm run build --if-present
+
+      - name: Validate Frontend Dependencies & Build
+        run: |
+          cd frontend
+          npm ci --prefer-offline --no-audit
+          npm run build
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Test Docker Images
+        uses: docker/bake-action@v4
+        with:
+          source: .
+          files: docker-compose.yml
+          targets: [backend, frontend]
+          set: |
+            *.cache-from=type=gha
+            *.cache-to=type=gha,mode=max
+        continue-on-error: true
+
+  deploy-to-server:
+    name: Continuous Deployment to Production Server
+    needs: validate-and-build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure SSH Key Agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SERVER_SSH_KEY }}
+
+      - name: Execute Remote Deployment Pipeline
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT || 22 }}
+          APP_PATH: /opt/nexusedge-erp
+        run: |
+          # Add target host key to known_hosts safely
+          mkdir -p ~/.ssh
+          ssh-keyscan -p "${SERVER_PORT}" -H "${SERVER_HOST}" >> ~/.ssh/known_hosts
+
+          # Execute remote deployment sequence over SSH
+          ssh -p "${SERVER_PORT}" "${SERVER_USER}@${SERVER_HOST}" "bash -se" << 'DEPLOY_SCRIPT'
+            set -eo pipefail
+            cd /opt/nexusedge-erp
+
+            echo "[+] 1. Fetching authoritative commits from main..."
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "[+] 2. Building fresh production container images..."
+            docker compose build --pull backend frontend
+
+            echo "[+] 3. Rolling update of application services..."
+            docker compose up -d --remove-orphans backend frontend caddy
+
+            echo "[+] 4. Verifying service operational health..."
+            sleep 5
+
+            # Confirm database health
+            DB_HEALTH=$(docker inspect -f '{{.State.Health.Status}}' nexusedge-db 2>/dev/null || echo "unknown")
+            if [ "$DB_HEALTH" != "healthy" ]; then
+              echo "[!] Database is not healthy (Current state: $DB_HEALTH)"
+              exit 1
+            fi
+
+            # Check internal HTTP health check via Caddy
+            API_HEALTH=$(docker compose exec -T caddy wget -qO- --timeout=5 http://backend:4000/health || true)
+            if echo "$API_HEALTH" | grep -q "healthy"; then
+              echo "[✓] Backend health verified: $API_HEALTH"
+            else
+              echo "[!] Backend failed internal health probe: $API_HEALTH"
+              exit 1
+            fi
+
+            echo "[✓] Deployment completed successfully."
+          DEPLOY_SCRIPT
+
+  verify-edge-ingress:
+    name: Verify Ingress & Edge TLS
+    needs: deploy-to-server
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe Public Ingress Health Endpoint
+        run: |
+          DOMAIN="erp.gautambhuwan.com.np"
+          echo "Testing ingress for: https://${DOMAIN}/health"
+          
+          # Attempt public probe with retries (accommodating tunnel reconnections)
+          for i in {1..6}; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 10 "https://${DOMAIN}/health" || echo "000")
+            if [ "$HTTP_CODE" == "200" ]; then
+              echo "[✓] Edge ingress operational: HTTP 200 OK"
+              exit 0
+            fi
+            echo "Waiting for edge propagation... (Attempt $i/6 - Status: $HTTP_CODE)"
+            sleep 5
+          done
+          
+          echo "[!] Edge ingress timed out or returned non-200. Check Cloudflare Tunnel logs."
+          exit 1
+        continue-on-error: true
