@@ -82,7 +82,7 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
-            echo "[+] 2. Rebuilding application containers..."
+            echo "[+] 2. Building production container images..."
             docker compose build --pull backend frontend
 
             echo "[+] 3. Rolling update of application services..."
@@ -90,71 +90,67 @@ jobs:
 
             echo "[+] 4. Verifying database container health..."
             DB_READY=false
-            for i in {1..15}; do
+            for i in $(seq 1 15); do
               STATUS=$(docker inspect -f '{{.State.Health.Status}}' nexusedge-db 2>/dev/null || echo "starting")
-              if [ "$STATUS" == "healthy" ]; then
+              if [ "$STATUS" = "healthy" ]; then
                 echo "[✓] Database confirmed healthy."
                 DB_READY=true
                 break
               fi
-              echo "Waiting for PostgreSQL healthcheck... ($i/15)"
+              echo "Waiting for database healthcheck... ($i/15)"
               sleep 2
             done
 
             if [ "$DB_READY" != "true" ]; then
-              echo "[!] Database failed to become healthy."
-              docker logs --tail 20 nexusedge-db
+              echo "[!] Database healthcheck failed."
+              docker logs --tail 25 nexusedge-db
               exit 1
             fi
 
-            echo "[+] 5. Probing Fastify backend health endpoint (IPv4 loopback)..."
+            echo "[+] 5. Probing Fastify backend health gate via Caddy (Polling up to 45s)..."
             API_HEALTHY=false
-            for attempt in {1..15}; do
-              # 1. Try explicit IPv4 loopback probe inside backend container
-              PROBE_RESULT=$(docker compose exec -T backend node -e '
+            for attempt in $(seq 1 15); do
+              # Query local Caddy reverse proxy using host curl with explicit Host header
+              HTTP_RESP=$(curl -s -m 3 -H "Host: erp.gautambhuwan.com.np" http://127.0.0.1/health 2>/dev/null || echo "ERR_NO_RESPONSE")
+              
+              if echo "$HTTP_RESP" | grep -q '"status":"healthy"'; then
+                echo "[✓] Backend health gate verified: $HTTP_RESP"
+                API_HEALTHY=true
+                break
+              fi
+
+              # Direct container node fallback without external binary dependencies
+              NODE_FALLBACK=$(docker compose exec -T backend node -e '
                 const http = require("http");
-                const req = http.get("http://127.0.0.1:4000/health", (res) => {
-                  let body = "";
-                  res.on("data", c => body += c);
-                  res.on("end", () => {
-                    if (res.statusCode === 200 && body.includes("healthy")) {
-                      process.stdout.write("HEALTHY:" + body);
+                http.get("http://127.0.0.1:4000/health", r => {
+                  let b = "";
+                  r.on("data", c => b += c);
+                  r.on("end", () => {
+                    if (r.statusCode === 200 && b.includes("healthy")) {
+                      process.stdout.write("NODE_OK");
                       process.exit(0);
                     }
-                    process.stderr.write(`HTTP_${res.statusCode}_BODY_${body}`);
                     process.exit(1);
                   });
-                });
-                req.on("error", (e) => { process.stderr.write("ERR_" + e.code); process.exit(1); });
-                req.setTimeout(3000, () => { req.destroy(); process.stderr.write("TIMEOUT"); process.exit(1); });
-              ' 2>&1 || true)
+                }).on("error", () => process.exit(1));
+              ' 2>/dev/null || echo "NODE_WAIT")
 
-              if [[ "$PROBE_RESULT" == HEALTHY:* ]]; then
-                echo "[✓] Backend health verified via 127.0.0.1:4000: ${PROBE_RESULT#HEALTHY:}"
+              if [ "$NODE_FALLBACK" = "NODE_OK" ]; then
+                echo "[✓] Backend direct health verified via Node loopback."
                 API_HEALTHY=true
                 break
               fi
 
-              # 2. Fallback probe: test via host Caddy proxy (:80/health)
-              CADDY_HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 3 http://127.0.0.1/health 2>/dev/null || echo "000")
-              if [ "$CADDY_HTTP_CODE" == "200" ]; then
-                echo "[✓] Backend health verified through Caddy Gateway (:80/health)"
-                API_HEALTHY=true
-                break
-              fi
-
-              echo "Backend probe attempt $attempt/15: status='$PROBE_RESULT', caddy_code='$CADDY_HTTP_CODE'. Retrying in 3s..."
+              echo "Backend booting... attempt $attempt/15 (Caddy output: '$HTTP_RESP'). Retrying in 3s..."
               sleep 3
             done
 
             if [ "$API_HEALTHY" != "true" ]; then
-              echo "[!] Backend health probe failed after 45 seconds."
-              echo "=== Docker Compose Process Table ==="
+              echo "[!] Backend health probe timed out after 45 seconds."
+              echo "=== Process Table ==="
               docker compose ps
-              echo "=== Fastify Container Logs (nexusedge-api) ==="
+              echo "=== Fastify Container Logs ==="
               docker logs --tail 40 nexusedge-api
-              echo "=== Caddy Gateway Logs (nexusedge-caddy) ==="
-              docker logs --tail 20 nexusedge-caddy
               exit 1
             fi
 
@@ -171,13 +167,13 @@ jobs:
           DOMAIN="erp.gautambhuwan.com.np"
           echo "Testing public ingress: https://${DOMAIN}/health"
           
-          for i in {1..6}; do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 10 "https://${DOMAIN}/health" || echo "000")
-            if [ "$HTTP_CODE" == "200" ]; then
+          for i in $(seq 1 6); do
+            HTTP_CODE=$(curl -s -o /dev/null -w "\%{http_code}" -m 10 "https://${DOMAIN}/health" || echo "000")
+            if [ "$HTTP_CODE" = "200" ]; then
               echo "[✓] Edge ingress operational: HTTP 200 OK"
               exit 0
             fi
-            echo "Waiting for edge response... (Attempt $i/6 - Status: $HTTP_CODE)"
+            echo "Waiting for edge response... (Attempt $i/6 - Status:$HTTP_CODE)"
             sleep 5
           done
           
