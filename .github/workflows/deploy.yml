@@ -85,23 +85,68 @@ jobs:
             echo "[+] 2. Rebuilding application containers..."
             docker compose build --pull backend frontend
 
-            echo "[+] 3. Rolling update of core services..."
-            docker compose up -d --remove-orphans backend frontend caddy
+            echo "[+] 3. Rolling update of application services..."
+            docker compose up -d --remove-orphans backend frontend caddy cloudflared
 
-            echo "[+] 4. Verifying container health..."
-            sleep 5
+            echo "[+] 4. Verifying container readiness with polling loop..."
+            
+            # Wait for database healthy state (up to 30s)
+            DB_READY=false
+            for i in {1..15}; do
+              STATUS=$(docker inspect -f '{{.State.Health.Status}}' nexusedge-db 2>/dev/null || echo "starting")
+              if [ "$STATUS" == "healthy" ]; then
+                echo "[✓] Database confirmed healthy."
+                DB_READY=true
+                break
+              fi
+              echo "Waiting for PostgreSQL healthcheck... ($i/15)"
+              sleep 2
+            done
 
-            DB_HEALTH=$(docker inspect -f '{{.State.Health.Status}}' nexusedge-db 2>/dev/null || echo "unknown")
-            if [ "$DB_HEALTH" != "healthy" ]; then
-              echo "[!] Database health check failed (State: $DB_HEALTH)"
+            if [ "$DB_READY" != "true" ]; then
+              echo "[!] Database failed to become healthy."
+              docker logs --tail 20 nexusedge-db
               exit 1
             fi
 
-            API_HEALTH=$(docker compose exec -T caddy wget -qO- --timeout=5 http://backend:4000/health || true)
-            if echo "$API_HEALTH" | grep -q "healthy"; then
-              echo "[✓] Backend health verified: $API_HEALTH"
-            else
-              echo "[!] Backend health probe failed: $API_HEALTH"
+            # Resilient API health check loop (up to 45s)
+            echo "[+] 5. Probing Fastify backend health endpoint..."
+            API_HEALTHY=false
+            for attempt in {1..15}; do
+              # Query internal health directly inside the container via Node
+              HEALTH_RESP=$(docker compose exec -T backend node -e '
+                const http = require("http");
+                const req = http.get("http://localhost:4000/health", (res) => {
+                  let body = "";
+                  res.on("data", c => body += c);
+                  res.on("end", () => {
+                    if (res.statusCode === 200 && body.includes("healthy")) {
+                      process.stdout.write("OK:" + body);
+                      process.exit(0);
+                    }
+                    process.exit(1);
+                  });
+                });
+                req.on("error", () => process.exit(1));
+                req.setTimeout(2000, () => { req.destroy(); process.exit(1); });
+              ' 2>/dev/null || echo "RETRY")
+
+              if [[ "$HEALTH_RESP" == OK:* ]]; then
+                echo "[✓] Backend health verified: ${HEALTH_RESP#OK:}"
+                API_HEALTHY=true
+                break
+              fi
+
+              echo "Backend still initializing... attempt $attempt/15"
+              sleep 3
+            done
+
+            if [ "$API_HEALTHY" != "true" ]; then
+              echo "[!] Backend health probe failed after 45 seconds!"
+              echo "--- Container status ---"
+              docker compose ps
+              echo "--- Backend runtime logs ---"
+              docker logs --tail 30 nexusedge-api
               exit 1
             fi
 
@@ -116,7 +161,7 @@ jobs:
       - name: Probe Public Ingress Health Endpoint
         run: |
           DOMAIN="erp.gautambhuwan.com.np"
-          echo "Testing ingress: https://${DOMAIN}/health"
+          echo "Testing public ingress: https://${DOMAIN}/health"
           
           for i in {1..6}; do
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 10 "https://${DOMAIN}/health" || echo "000")
