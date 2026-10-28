@@ -31,13 +31,21 @@ jobs:
       - name: Validate Backend Dependencies & Compilation
         run: |
           cd backend
-          npm ci --prefer-offline --no-audit
+          if [ -f package-lock.json ]; then
+            npm ci --prefer-offline --no-audit
+          else
+            npm install --prefer-offline --no-audit
+          fi
           npm run build --if-present
 
       - name: Validate Frontend Dependencies & Build
         run: |
           cd frontend
-          npm ci --prefer-offline --no-audit
+          if [ -f package-lock.json ]; then
+            npm ci --prefer-offline --no-audit
+          else
+            npm install --prefer-offline --no-audit
+          fi
           npm run build
 
       - name: Validate Docker Compose Build
